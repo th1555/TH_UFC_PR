@@ -54,6 +54,29 @@ def _method_cat(method):
     return 'finish'
 
 
+_REAL_DIVISIONS = [
+    "Women's Strawweight", "Women's Flyweight", "Women's Bantamweight",
+    "Women's Featherweight",
+    "Light Heavyweight", "Heavyweight", "Middleweight", "Welterweight",
+    "Lightweight", "Featherweight", "Bantamweight", "Flyweight", "Strawweight",
+]
+
+
+def canonicalise_weightclass(wc):
+    """Raw 'Middleweight Bout' -> 'Middleweight'. Ported verbatim from notebook 07."""
+    if pd.isna(wc):
+        return None
+    text = str(wc)
+    if re.search(r'\b(Tournament|Ultimate Fighter|Ultimate Japan|Road to)\b', text, re.IGNORECASE):
+        for div in _REAL_DIVISIONS:
+            if div.lower() in text.lower():
+                return div
+        return None
+    cleaned = re.sub(r'\b(UFC|Interim|Title|Bout)\b', '', text, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    return cleaned if cleaned else None
+
+
 def _bout_id_from_url(url):
     """The ufcstats fight-details hash is the FIGHT_ID / bout_id."""
     return str(url).rstrip('/').split('/')[-1]
@@ -135,6 +158,7 @@ def build_rows(results, stats, events, snapshot):
             'event_date': ev_date.get(r.EVENT, pd.NaT),
             'fighter_1': f1, 'fighter_2': f2, 'outcome': outcome,
             'method': method, 'method_cat': mcat,
+            'weightclass': canonicalise_weightclass(getattr(r, 'WEIGHTCLASS', None)),
             'finish_round': float(r.ROUND) if pd.notna(r.ROUND) else np.nan,
             'sig_landed_1': g(s1, 'sig_landed'), 'sig_landed_2': g(s2, 'sig_landed'),
             'sig_att_1': g(s1, 'sig_att'), 'sig_att_2': g(s2, 'sig_att'),

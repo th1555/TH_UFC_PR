@@ -63,6 +63,11 @@ def build_ledger_df(ref=REF):
     uncovered = pd.DataFrame(records)
 
     ledger = pd.concat([covered, uncovered], ignore_index=True)
+
+    # canonical weight class per bout (authoritative field from the frozen base)
+    wc_map = fpf.drop_duplicates('FIGHT_ID').set_index('FIGHT_ID')['WEIGHTCLASS_CANONICAL']
+    ledger['weightclass'] = ledger['bout_id'].map(wc_map)
+
     ledger['modelable'] = True
     ledger['source'] = 'seed'
     ledger['ingest_snapshot'] = 'freeze_ufc329_2026-07-11'
