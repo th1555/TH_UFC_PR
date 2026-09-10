@@ -104,14 +104,22 @@ def replay(scored):
     return history_df, current_df
 
 
+def rebuild(ledger, anchors):
+    """Pure: score an in-memory ledger and replay it. Returns (history, current).
+
+    This is the entry point a dashboard should call, so a rerun never needs
+    to touch disk to recompute.
+    """
+    return replay(score_ledger(ledger, anchors))
+
+
 def run(ledger_path=None, anchors_path=None):
-    """Load, score, and replay. Returns (history_df, current_df)."""
+    """Load from disk, then rebuild. Returns (history_df, current_df)."""
     ledger_path = Path(ledger_path) if ledger_path else ROOT / 'data' / 'bout_ledger.parquet'
     anchors_path = Path(anchors_path) if anchors_path else ROOT / 'anchors' / 'performance.yaml'
     ledger = pd.read_parquet(ledger_path)
     anchors = load_anchors(anchors_path)
-    scored = score_ledger(ledger, anchors)
-    return replay(scored)
+    return rebuild(ledger, anchors)
 
 
 def main():

@@ -18,11 +18,11 @@ REF = ROOT / 'reference'
 DATA = ROOT / 'data'
 
 
-def build():
+def build_ledger_df(ref=REF):
     # Covered bouts carry round-level stats. Keep one row per bout id (last
     # wins, matching the frozen lookup's overwrite behaviour on duplicates).
-    bp = pd.read_parquet(REF / 'frozen_bout_pairs.parquet').drop_duplicates('FIGHT_ID', keep='last')
-    fpf = pd.read_parquet(REF / 'frozen_fights_per_fighter.parquet')
+    bp = pd.read_parquet(ref / 'frozen_bout_pairs.parquet').drop_duplicates('FIGHT_ID', keep='last')
+    fpf = pd.read_parquet(ref / 'frozen_fights_per_fighter.parquet')
 
     # fighter_1 = winner, fighter_2 = loser; stats aligned to each.
     covered = pd.DataFrame({
@@ -67,13 +67,20 @@ def build():
     ledger['source'] = 'seed'
     ledger['ingest_snapshot'] = 'freeze_ufc329_2026-07-11'
 
-    DATA.mkdir(exist_ok=True)
-    out = DATA / 'bout_ledger.parquet'
-    ledger.to_parquet(out, index=False)
-    print(f"Wrote {out}")
-    print(f"  {len(ledger):,} bouts "
-          f"({int(ledger['stats_coverage'].sum()):,} covered, "
-          f"{int((~ledger['stats_coverage']).sum()):,} binary)")
+    return ledger
+
+
+def build(write=True):
+    """Build the seed ledger and (by default) write it as the initial live ledger."""
+    ledger = build_ledger_df()
+    if write:
+        DATA.mkdir(exist_ok=True)
+        out = DATA / 'bout_ledger.parquet'
+        ledger.to_parquet(out, index=False)
+        print(f"Wrote {out}")
+        print(f"  {len(ledger):,} bouts "
+              f"({int(ledger['stats_coverage'].sum()):,} covered, "
+              f"{int((~ledger['stats_coverage']).sum()):,} binary)")
     return ledger
 
 
