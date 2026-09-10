@@ -80,6 +80,7 @@ One row per bout.
 | `fighter_2_id` | string | raw participant |
 | `outcome` | category | raw code: `F1_WIN`, `F2_WIN`, `DRAW`, `NC`, `OVERTURNED`, `CNC`, `OTHER` |
 | `method` | string | raw string ("KO/TKO", "Decision - Unanimous"); runner maps to a baseline key and derives the decision-versus-finish category |
+| `weightclass` | string | canonical bout weight class (e.g. "Lightweight"); seed from the frozen base, new events canonicalised from the feed; drives the per-division boards |
 | `finish_round` | Int64 | nullable; NA for decisions |
 | `finish_time_seconds` | Int64 | nullable |
 | `sig_strikes_landed_1` / `_2` | Int64 | per-fighter bout totals, summed over rounds |
@@ -111,6 +112,7 @@ One row per bout.
 - **`modelable` is stored but derived.** It is a pure function of
   `outcome` and `method`, so a future change to the exclusion rules
   re-derives it rather than orphaning the ledger.
+- **Weight class is the bout's, not the fighter's.** Each bout happened at one weight; a fighter's division is derived at rank time as the modal (or recent) weight class across their bouts, never stored on the fighter.
 - **Nothing flavour-specific appears in the ledger.** A control-weighted
   profile or the excitement index reads these same rows with no schema
   change.
