@@ -1,0 +1,32 @@
+# Performance flavour: dominance-weight profile for the continuous-S score.
+# Source of truth for the scoring weights. Edit here, then rerun the runner.
+method_baselines:
+  ko_tko: 0.85              # finish is the ceiling reference
+  submission: 0.85
+  doctor_stoppage: 0.80
+  decision_unanimous: 0.76
+  decision_majority: 0.73
+  decision_split: 0.70
+  dq: 0.70
+dominance:
+  max_swing: 0.15
+  weights:
+    strike_diff: 0.40
+    control_diff: 0.30
+    knockdowns: 0.20
+    finish_round: 0.10
+  saturation:
+    strike_diff: 43         # 90th pctile of covered bouts
+    control_diff: 423       # 90th pctile
+    knockdowns: 1           # 95th pctile
+    finish_round_r1: 1.00
+    finish_round_r2: 0.66
+    finish_round_r3: 0.33
+    finish_round_r4_5: 0.10
+clipping:
+  winner_min: 0.50
+  winner_max: 1.00
+meta:
+  status: informed priors with data-calibrated saturation thresholds
+  calibrated_from: 90th percentile of bouts with round-level coverage
+  notes: Performance flavour. Validated to reproduce the frozen MSc scores bit-exactly.
