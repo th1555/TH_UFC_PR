@@ -73,7 +73,7 @@ def last_appearance(ledger_subset):
 
 def rank(current, ledger_subset, ref_date=None, k=DEFAULT_K,
          inactivity_floor=DEFAULT_INACTIVITY_FLOOR,
-         active_months=DEFAULT_ACTIVE_MONTHS, top=None):
+         active_months=DEFAULT_ACTIVE_MONTHS, apply_inactivity=True, top=None):
     """
     Rank fighters by the conservative estimate.
 
@@ -84,14 +84,26 @@ def rank(current, ledger_subset, ref_date=None, k=DEFAULT_K,
     bouts for P4P; one division's bouts for a division board).
     """
     ref_date = pd.Timestamp(ref_date) if ref_date is not None else pd.Timestamp.today().normalize()
-    df = with_display_state(current, ref_date, floor=inactivity_floor)   # RD_NOW off last result
-    df['CR'] = df['RATING'] - k * df['RD_NOW']                           # conservative estimate
 
-    seen = last_appearance(ledger_subset)
-    df['LAST_SEEN'] = pd.to_datetime(df['FIGHTER'].map(seen))
-    df['MONTHS_SINCE_SEEN'] = ((ref_date - df['LAST_SEEN']).dt.days / 30.44).round(1)
+    if apply_inactivity:
+        # "Current form": RD widens with the layoff, and we gate on activity.
+        df = with_display_state(current, ref_date, floor=inactivity_floor)
+    else:
+        # "All-time": use the fighter's actual career-end RD; no inactivity
+        # inflation, no activity gate. Ranks careers, not current form.
+        df = current.copy()
+        df['RD_NOW'] = df['RD']
+        df['TIER_NOW'] = df['RD'].apply(_tier)
+        df['MONTHS_IDLE'] = ((ref_date - pd.to_datetime(df['LAST_FIGHT'])).dt.days / 30.44).round(1)
 
-    df = df[df['MONTHS_SINCE_SEEN'] <= active_months].copy()   # gate on APPEARANCE
+    df['CR'] = df['RATING'] - k * df['RD_NOW']                 # conservative estimate
+
+    if active_months is not None:                             # activity gate (current only)
+        seen = last_appearance(ledger_subset)
+        df['LAST_SEEN'] = pd.to_datetime(df['FIGHTER'].map(seen))
+        df['MONTHS_SINCE_SEEN'] = ((ref_date - df['LAST_SEEN']).dt.days / 30.44).round(1)
+        df = df[df['MONTHS_SINCE_SEEN'] <= active_months].copy()
+
     df = df.sort_values('CR', ascending=False).reset_index(drop=True)
     df.insert(0, 'RANK', df.index + 1)
     return df.head(top) if top else df
@@ -126,13 +138,38 @@ def division_current(ledger, anchors, division):
     return current
 
 
-def division_board(ledger, anchors, division, ref_date=None, top=None, **kwargs):
-    """Ranked board for one division, using the same dial as the P4P list."""
+def division_board(ledger, anchors, division, ref_date=None, all_time=False, top=None, **kwargs):
+    """Ranked board for one division. all_time=True drops the activity gate and
+    the inactivity RD inflation, ranking careers rather than current form."""
     sub = ledger[ledger['weightclass'] == division]
     current = division_current(ledger, anchors, division)
     if current is None or not len(current):
         return None
+    if all_time:
+        return rank(current, sub, apply_inactivity=False, active_months=None, top=top, **kwargs)
     return rank(current, sub, ref_date=ref_date, top=top, **kwargs)
+
+def fighter_sex(ledger):
+    """Map each fighter to 'F' or 'M'. Women's divisions start with "Women's",
+    and the sexes never meet, so any Women's-division bout marks a fighter female."""
+    long = pd.concat([
+        ledger[['fighter_1', 'weightclass']].rename(columns={'fighter_1': 'FIGHTER'}),
+        ledger[['fighter_2', 'weightclass']].rename(columns={'fighter_2': 'FIGHTER'}),
+    ], ignore_index=True)
+    is_female = (long.assign(w=long['weightclass'].astype(str).str.startswith("Women's"))
+                     .groupby('FIGHTER')['w'].any())
+    return is_female.map({True: 'F', False: 'M'})
+
+
+def pound_for_pound(current, ledger, sex=None, ref_date=None, top=None, **kwargs):
+    """P4P list, optionally filtered to one sex ('M' or 'F')."""
+    df = rank(current, ledger, ref_date=ref_date, **kwargs)
+    if sex:
+        smap = fighter_sex(ledger)
+        df = df[df['FIGHTER'].map(smap) == sex].reset_index(drop=True)
+        df['RANK'] = df.index + 1
+    return df.head(top) if top else df
+
 
 
 def all_boards(ledger, anchors, ref_date=None, divisions=None, top=None, **kwargs):
