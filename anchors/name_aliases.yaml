@@ -1,0 +1,7 @@
+# Name aliases: map a variant spelling from the feed to the canonical fighter
+# name, to merge a fighter who would otherwise be split across two spellings.
+# Add an entry ONLY after confirming the two names are the SAME person, i.e. a
+# collision flagged by tests/check_names.py that is a real duplicate and not
+# two different people (father/son suffixes like Jr/III are different people).
+# Format:  "Variant Name": "Canonical Name"
+{}
