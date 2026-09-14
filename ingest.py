@@ -13,6 +13,7 @@ Sources (Greco1899 mirror of ufcstats.com, refreshed daily):
 """
 from datetime import date
 import re
+import unicodedata
 import pandas as pd
 import numpy as np
 
@@ -75,6 +76,43 @@ def canonicalise_weightclass(wc):
     cleaned = re.sub(r'\b(UFC|Interim|Title|Bout)\b', '', text, flags=re.IGNORECASE)
     cleaned = re.sub(r'\s+', ' ', cleaned).strip()
     return cleaned if cleaned else None
+
+
+
+def normalise_name(name):
+    """For collision detection only: strip accents, case, and punctuation.
+    Generational suffixes (Jr/Sr/II/III) are PRESERVED, since they distinguish
+    genuinely different fighters (e.g. Lance Gibson vs Lance Gibson Jr., who are
+    father and son). Never used to rewrite stored names, only to spot duplicates.
+    """
+    s = unicodedata.normalize('NFKD', str(name)).encode('ascii', 'ignore').decode()
+    s = s.lower()
+    s = re.sub(r'[^a-z0-9 ]', ' ', s)          # punctuation -> space; suffixes survive
+    return re.sub(r'\s+', ' ', s).strip()
+
+
+def find_collisions(names):
+    """Return {normalised: [raw spellings]} for any normalised name carried by
+    more than one raw spelling. Each is a candidate mis-split (one fighter under
+    two spellings) for human review, not an automatic merge."""
+    groups = {}
+    for n in names:
+        if pd.isna(n):
+            continue
+        groups.setdefault(normalise_name(n), []).append(n)
+    return {k: sorted(set(v)) for k, v in groups.items() if len(set(v)) > 1}
+
+
+def apply_aliases(ledger, aliases):
+    """Rewrite fighter names through an alias map {variant: canonical}, so a
+    confirmed duplicate merges retroactively across all of a fighter's bouts.
+    Applied to the live ledger before rebuild/ranking; empty map is a no-op."""
+    if not aliases:
+        return ledger
+    out = ledger.copy()
+    out['fighter_1'] = out['fighter_1'].replace(aliases)
+    out['fighter_2'] = out['fighter_2'].replace(aliases)
+    return out
 
 
 def _bout_id_from_url(url):
@@ -219,4 +257,7 @@ def ingest(ledger, base=BASE, snapshot=None):
     status['ok'] = True
     status['new_bouts'] = int(len(fresh))
     status['new_events'] = int(fresh['event_date'].nunique()) if len(fresh) else 0
+    # name-collision guard: flag any duplicate spellings in the updated roster
+    roster = set(new_ledger['fighter_1']) | set(new_ledger['fighter_2'])
+    status['name_warnings'] = find_collisions(roster)
     return new_ledger, status

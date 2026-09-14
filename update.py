@@ -11,6 +11,8 @@ persists is still an open decision.
 from pathlib import Path
 import pandas as pd
 
+import yaml
+
 import ingest
 import runner
 from scoring import load_anchors
@@ -28,10 +30,18 @@ def update(write=True, base=ingest.BASE):
         return status
 
     if write and status["new_bouts"]:
-        new_ledger.to_parquet(ledger_path, index=False)
+        new_ledger.to_parquet(ledger_path, index=False)   # ledger stays RAW
+
+    # Apply name aliases at rebuild (not baked into the ledger), so a confirmed
+    # duplicate merges retroactively. Empty table is a no-op.
+    aliases_path = ROOT / "name_aliases.yaml"
+    aliases = {}
+    if aliases_path.exists():
+        aliases = yaml.safe_load(aliases_path.read_text()) or {}
+    canon = ingest.apply_aliases(new_ledger, aliases)
 
     anchors = load_anchors(ROOT / "anchors" / "performance.yaml")
-    history, current = runner.rebuild(new_ledger, anchors)
+    history, current = runner.rebuild(canon, anchors)
 
     if write:
         (ROOT / "data").mkdir(exist_ok=True)
