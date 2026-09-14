@@ -107,9 +107,11 @@ def replay(scored):
 def rebuild(ledger, anchors):
     """Pure: score an in-memory ledger and replay it. Returns (history, current).
 
-    This is the entry point a dashboard should call, so a rerun never needs
-    to touch disk to recompute.
+    Non-modelable bouts (No Contests etc.) are recorded in the ledger for the
+    activity record but never scored, so they don't touch the ratings.
     """
+    if 'modelable' in ledger.columns:
+        ledger = ledger[ledger['modelable']]
     return replay(score_ledger(ledger, anchors))
 
 

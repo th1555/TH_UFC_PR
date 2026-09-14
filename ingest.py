@@ -139,8 +139,12 @@ def build_rows(results, stats, events, snapshot):
             f1, f2, outcome = a, b, 'F1_WIN'
         elif outcome_raw.startswith('L'):      # 'L/W' -> second named won
             f1, f2, outcome = b, a, 'F1_WIN'
-        else:                                   # 'D/D', 'NC', etc.
-            f1, f2, outcome = a, b, 'DRAW' if outcome_raw.startswith('D') else 'OTHER'
+        elif outcome_raw.startswith('D'):      # draw
+            f1, f2, outcome = a, b, 'DRAW'
+        elif outcome_raw.startswith('N'):      # no contest (still an appearance)
+            f1, f2, outcome = a, b, 'NC'
+        else:
+            f1, f2, outcome = a, b, 'OTHER'
 
         method = str(r.METHOD).strip()
         mcat = _method_cat(method)
@@ -199,11 +203,13 @@ def ingest(ledger, base=BASE, snapshot=None):
 
     new_rows = build_rows(data['results'], data['stats'], events, snapshot)
     have = set(ledger['bout_id'])
-    fresh = new_rows[~new_rows['bout_id'].isin(have)].copy()
-    # only fold modelable, dated bouts that are newer than what we already hold
-    # (prevents back-filling old bouts the seed deliberately excluded)
-    fresh = fresh[fresh['modelable'] & fresh['event_date'].notna()
-                  & (fresh['event_date'] >= ledger_latest)]
+    fresh = new_rows[~new_rows['bout_id'].isin(have) & new_rows['event_date'].notna()].copy()
+    # Modelable bouts: fold only those newer than what we hold, so we never
+    # back-fill old bouts the seed deliberately excluded (keeps the seed's
+    # rated set intact). Non-modelable bouts (NCs): fold regardless of date,
+    # since they only enrich the activity record and never affect ratings.
+    fresh = fresh[(fresh['modelable'] & (fresh['event_date'] >= ledger_latest))
+                  | (~fresh['modelable'])]
 
     if len(fresh):
         new_ledger = pd.concat([ledger, fresh[ledger.columns]], ignore_index=True)
