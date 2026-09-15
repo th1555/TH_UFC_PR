@@ -75,42 +75,76 @@ def last_appearance(ledger_subset):
     return a.groupby('FIGHTER')['event_date'].max()
 
 
-def momentum(history, n=5):
-    """Recent form per fighter over their last n rated fights.
+def _form_string(scores):
+    return ''.join('W' if s > 0.5 else ('D' if s == 0.5 else 'L') for s in scores)
 
-    Returns FORM_SCORE and a FORM string. The score sums each fight's surprise
-    (actual result minus what the ratings predicted going in), averaged per
-    fight and scaled, so it is comparable across established and unestablished
-    fighters: it measures beating expectations, not merely winning. Positive is
-    hot form, negative is cold. Roughly -35..+35 in practice. Paired with the
-    win-loss string so the record always sits beside the number.
+
+def _with_surprise(history):
+    """Add per-fight SURPRISE: actual result minus what the ratings predicted,
+    with the prediction set by the opponent's pre-fight rating and uncertainty.
+    Opponent quality is therefore baked into every fight's contribution.
     """
     h = history.copy()
     h['DATE'] = pd.to_datetime(h['DATE'])
-    # each fighter's opponent pre-fight rating/RD, via the shared FIGHT_ID
     opp = h[['FIGHT_ID', 'FIGHTER', 'RATING_PRE', 'RD_PRE']].rename(
         columns={'FIGHTER': 'OPPONENT', 'RATING_PRE': 'OPP_RATING_PRE', 'RD_PRE': 'OPP_RD_PRE'})
     h = h.merge(opp, on=['FIGHT_ID', 'OPPONENT'], how='left')
-
-    # expected score (vectorised): logistic in the rating gap, damped by the
-    # opponent's uncertainty. Same form the engine uses internally.
     mu_f = (h['RATING_PRE'] - 1500) / ge.SCALE
     mu_o = (h['OPP_RATING_PRE'] - 1500) / ge.SCALE
     phi_o = h['OPP_RD_PRE'] / ge.SCALE
     g_o = 1 / np.sqrt(1 + 3 * phi_o ** 2 / np.pi ** 2)
     expected = 1 / (1 + np.exp(-g_o * (mu_f - mu_o)))
     h['SURPRISE'] = h['SCORE'] - expected
+    return h.sort_values('DATE')
 
-    h = h.sort_values('DATE')
+
+def momentum(history, n=5):
+    """Recent form per fighter over their last n rated fights (FORM_SCORE +
+    a FORM string). Quality-adjusted and comparable across fighters; positive
+    is hot, negative cold. Used as a column beside the rankings."""
+    h = _with_surprise(history)
     rows = []
     for name, g in h.groupby('FIGHTER'):
         g = g.tail(n)
-        form = ''.join('W' if s > 0.5 else ('D' if s == 0.5 else 'L') for s in g['SCORE'])
         rows.append({'FIGHTER': name,
                      'FORM_SCORE': round(g['SURPRISE'].mean() * 100),
-                     'FORM': form,
+                     'FORM': _form_string(g['SCORE']),
                      'N_RECENT': len(g)})
     return pd.DataFrame(rows)
+
+
+def hot_list(history, ledger, ref_date=None, window_months=24, min_fights=3,
+             division=None, sex=None, top=None):
+    """Momentum board: who is hottest over a fixed recent window.
+
+    Form is the average per-fight surprise (x100) over fights in the last
+    window_months; a fighter must have at least min_fights in that window to
+    qualify, which keeps two-fight small samples off the list. Filter to one
+    division (by weight class) or one sex. Sorted hottest first.
+    """
+    ref_date = pd.Timestamp(ref_date) if ref_date is not None else pd.Timestamp.today().normalize()
+    h = _with_surprise(history)
+    wc = ledger.drop_duplicates('bout_id').set_index('bout_id')['weightclass']
+    h['WC'] = h['FIGHT_ID'].map(wc)
+    h = h[h['DATE'] >= ref_date - pd.DateOffset(months=window_months)]
+    if division:
+        h = h[h['WC'] == division]
+    rows = []
+    for name, g in h.groupby('FIGHTER'):
+        if len(g) < min_fights:
+            continue
+        rows.append({'FIGHTER': name,
+                     'FORM_SCORE': round(g['SURPRISE'].mean() * 100),
+                     'FORM': _form_string(g['SCORE']),
+                     'N_RECENT': len(g),
+                     'LAST_SEEN': g['DATE'].max()})
+    board = pd.DataFrame(rows)
+    if sex and len(board):
+        smap = fighter_sex(ledger)
+        board = board[board['FIGHTER'].map(smap) == sex]
+    board = board.sort_values('FORM_SCORE', ascending=False).reset_index(drop=True)
+    board.insert(0, 'RANK', board.index + 1)
+    return board.head(top) if top else board
 
 
 def rank(current, ledger_subset, ref_date=None, k=DEFAULT_K,

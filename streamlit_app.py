@@ -1,16 +1,15 @@
 """
 streamlit_app.py — TH_UFC_PR exploration dashboard.
 
-A read-and-recompute viewer over the ranking functions. It loads the committed
-ledger, rebuilds ratings, and lets you explore the pound-for-pound lists
-(male / female) and the per-division current boards, with the ranking dials
-exposed so you can see how the ordering responds. It never writes or commits;
-data updates happen via update.py run separately. A "fetch latest" button can
-PREVIEW new events in-memory without saving them.
+A read-and-recompute viewer over the ranking functions. Two modes:
+  - Power ranking: the ordered board (P4P male/female, or a division current
+    board), with the ranking dials exposed.
+  - Momentum: who is hottest over a fixed recent window, sorted by form.
+It loads the committed ledger and recomputes; it never writes or commits. A
+"fetch latest" button previews new events in memory without saving them.
 
 Run locally:  streamlit run streamlit_app.py
-Hosted:       Streamlit Community Cloud, pointed at this repo (main file
-              streamlit_app.py).
+Hosted:       Streamlit Community Cloud, main file streamlit_app.py.
 """
 from pathlib import Path
 import pandas as pd
@@ -31,8 +30,8 @@ st.set_page_config(page_title="UFC Power Rankings", layout="wide")
 
 
 # ---------------------------------------------------------------------------
-# Data: load the committed ledger, apply aliases, rebuild ratings once. Cached
-# on the ledger file's fingerprint so it only recomputes when the file changes.
+# Data: load the committed ledger, apply aliases, rebuild once. Cached on the
+# ledger file's fingerprint so it only recomputes when the file changes.
 # ---------------------------------------------------------------------------
 def _ledger_fingerprint():
     s = LEDGER.stat()
@@ -48,13 +47,13 @@ def _rebuild_from_committed(_fingerprint):
 
 
 def _rebuild_all(ledger):
-    """Return (ledger, pooled_current, {division: division_current}, momentum)."""
+    """Return (ledger, pooled_current, {division: current}, momentum, history)."""
     anchors = load_anchors(ANCHORS)
     history, pooled = runner.rebuild(ledger, anchors)
     mom = rankings.momentum(history)
     div_currents = {d: rankings.division_current(ledger, anchors, d)
                     for d in rankings.REAL_DIVISIONS}
-    return ledger, pooled, div_currents, mom
+    return ledger, pooled, div_currents, mom, history
 
 
 def get_data():
@@ -65,23 +64,29 @@ def get_data():
 
 
 # ---------------------------------------------------------------------------
-# Sidebar controls
+# Sidebar
 # ---------------------------------------------------------------------------
 st.sidebar.header("View")
-DIVISIONS = rankings.REAL_DIVISIONS
+mode = st.sidebar.radio("Mode", ["Power ranking", "Momentum (who's hot)"])
 view = st.sidebar.selectbox(
     "Ranking",
-    ["Pound-for-pound (Male)", "Pound-for-pound (Female)"] + DIVISIONS,
+    ["Pound-for-pound (Male)", "Pound-for-pound (Female)"] + rankings.REAL_DIVISIONS,
 )
 top_n = st.sidebar.slider("Show top", 5, 50, 20, 5)
 
-st.sidebar.header("Dials")
-st.sidebar.caption("How the ordering responds to uncertainty and inactivity.")
-k = st.sidebar.slider("Uncertainty penalty (k)", 0.0, 3.0, rankings.DEFAULT_K, 0.1)
-floor = st.sidebar.slider("Inactivity floor", 0.18, 0.80,
-                          rankings.DEFAULT_INACTIVITY_FLOOR, 0.01)
-gate = st.sidebar.slider("Activity gate (months)", 6, 36,
-                         rankings.DEFAULT_ACTIVE_MONTHS, 1)
+if mode == "Power ranking":
+    st.sidebar.header("Dials")
+    st.sidebar.caption("How the ordering responds to uncertainty and inactivity.")
+    k = st.sidebar.slider("Uncertainty penalty (k)", 0.0, 3.0, rankings.DEFAULT_K, 0.1)
+    floor = st.sidebar.slider("Inactivity floor", 0.18, 0.80,
+                              rankings.DEFAULT_INACTIVITY_FLOOR, 0.01)
+    gate = st.sidebar.slider("Activity gate (months)", 6, 36,
+                             rankings.DEFAULT_ACTIVE_MONTHS, 1)
+else:
+    st.sidebar.header("Momentum window")
+    st.sidebar.caption("Who's built the most form over a fixed recent window.")
+    window = st.sidebar.slider("Window (months)", 6, 36, 24, 3)
+    min_fights = st.sidebar.slider("Minimum fights in window", 2, 6, 3, 1)
 
 st.sidebar.header("Live feed")
 if st.sidebar.button("Fetch latest events (preview, not saved)"):
@@ -91,26 +96,39 @@ if st.sidebar.button("Fetch latest events (preview, not saved)"):
         aliases = yaml.safe_load(ALIASES.read_text()) if ALIASES.exists() else {}
         new_ledger = ingest.apply_aliases(new_ledger, aliases or {})
         st.session_state["preview"] = {"data": _rebuild_all(new_ledger), "status": status}
-if "preview" in st.session_state:
-    if st.sidebar.button("Clear preview (back to committed)"):
-        del st.session_state["preview"]
+if "preview" in st.session_state and st.sidebar.button("Clear preview (back to committed)"):
+    del st.session_state["preview"]
 
 
 # ---------------------------------------------------------------------------
 # Build the selected board
 # ---------------------------------------------------------------------------
-ledger, pooled, div_currents, mom = get_data()
+ledger, pooled, div_currents, mom, history = get_data()
 ref = pd.Timestamp.today().normalize()
-dial = dict(ref_date=ref, k=k, inactivity_floor=floor, active_months=gate, top=top_n)
+is_p4p = view.startswith("Pound-for-pound")
+sex = ("M" if "Male" in view else "F") if is_p4p else None
 
-if view.startswith("Pound-for-pound"):
-    sex = "M" if "Male" in view else "F"
-    board = rankings.pound_for_pound(pooled, ledger, sex=sex, **dial)
+if mode == "Power ranking":
+    dial = dict(ref_date=ref, k=k, inactivity_floor=floor, active_months=gate, top=top_n)
+    if is_p4p:
+        board = rankings.pound_for_pound(pooled, ledger, sex=sex, **dial)
+    else:
+        board = rankings.rank(div_currents[view], ledger[ledger["weightclass"] == view], **dial)
+    board = board.merge(mom[["FIGHTER", "FORM_SCORE", "FORM"]], on="FIGHTER", how="left")
+    cols = {
+        "RANK": "#", "FIGHTER": "Fighter", "RATING": "Rating",
+        "RD_NOW": "RD", "CR": "Conservative", "FORM_SCORE": "Form", "FORM": "Last 5",
+        "MONTHS_SINCE_SEEN": "Months idle", "TIER_NOW": "Confidence", "N_FIGHTS": "UFC fights",
+    }
+    fmt = {"Rating": "{:.0f}", "RD": "{:.0f}", "Conservative": "{:.0f}",
+           "Form": "{:+.0f}", "Months idle": "{:.1f}"}
 else:
-    sub = ledger[ledger["weightclass"] == view]
-    board = rankings.rank(div_currents[view], sub, **dial)
-
-board = board.merge(mom[["FIGHTER", "FORM_SCORE", "FORM"]], on="FIGHTER", how="left")
+    board = rankings.hot_list(history, ledger, ref_date=ref, window_months=window,
+                              min_fights=min_fights,
+                              division=None if is_p4p else view, sex=sex, top=top_n)
+    cols = {"RANK": "#", "FIGHTER": "Fighter", "FORM_SCORE": "Form",
+            "FORM": f"Record ({window}mo)", "N_RECENT": "Fights"}
+    fmt = {"Form": "{:+.0f}"}
 
 
 # ---------------------------------------------------------------------------
@@ -119,7 +137,8 @@ board = board.merge(mom[["FIGHTER", "FORM_SCORE", "FORM"]], on="FIGHTER", how="l
 as_of = pd.to_datetime(ledger["event_date"]).max().date()
 n_fighters = len(set(ledger["fighter_1"]) | set(ledger["fighter_2"]))
 st.title("UFC Power Rankings")
-st.caption(f"{view}  ·  data through {as_of}  ·  {n_fighters:,} fighters  ·  "
+label = f"{view}" + ("  ·  momentum" if mode != "Power ranking" else "")
+st.caption(f"{label}  ·  data through {as_of}  ·  {n_fighters:,} fighters  ·  "
            f"rating = UFC-only Glicko-2 with a continuous-S dominance modifier")
 
 if "preview" in st.session_state:
@@ -134,35 +153,41 @@ if "preview" in st.session_state:
 # ---------------------------------------------------------------------------
 # The board
 # ---------------------------------------------------------------------------
-cols = {
-    "RANK": "#", "FIGHTER": "Fighter", "RATING": "Rating",
-    "RD_NOW": "RD", "CR": "Conservative", "FORM_SCORE": "Form", "FORM": "Last 5",
-    "MONTHS_SINCE_SEEN": "Months idle", "TIER_NOW": "Confidence", "N_FIGHTS": "UFC fights",
-}
 show = board[[c for c in cols if c in board.columns]].rename(columns=cols)
 st.dataframe(
-    show.style.format({"Rating": "{:.0f}", "RD": "{:.0f}",
-                       "Conservative": "{:.0f}", "Months idle": "{:.1f}"}),
+    show.style.format(fmt),
     hide_index=True, width='stretch', height=min(38 * (top_n + 1), 900),
 )
 
 with st.expander("What the columns mean"):
-    st.markdown(
-        "- **Rating**: the fighter's Glicko-2 strength; higher is stronger. "
-        "Never decays for inactivity.\n"
-        "- **RD**: uncertainty in that rating as of today; grows with a layoff "
-        "and with too few fights.\n"
-        "- **Conservative**: Rating minus (k x RD), the lower edge of what "
-        "we're confident of. This is what the list is sorted by, so the "
-        "uncertain are demoted.\n"
-        "- **Months idle**: time since the fighter's last appearance (a No "
-        "Contest counts as an appearance).\n"
-        "- **Confidence**: how well the fighter's record establishes the rating "
-        "(Established / Provisional / Unreliable), based on their settled "
-        "uncertainty before any inactivity adjustment."
-    )
+    if mode == "Power ranking":
+        st.markdown(
+            "- **Rating**: Glicko-2 strength; higher is stronger. Never decays "
+            "for inactivity.\n"
+            "- **RD**: uncertainty as of today; grows with a layoff and with too "
+            "few fights.\n"
+            "- **Conservative**: Rating minus (k x RD), the lower edge of what "
+            "we're confident of. The list sorts by this, so the uncertain are "
+            "demoted.\n"
+            "- **Form**: recent form over the last 5 fights, quality-adjusted "
+            "(how much they beat what the ratings predicted). Positive is hot.\n"
+            "- **Last 5**: win-loss-draw string for those fights.\n"
+            "- **Months idle**: time since the last appearance (a No Contest "
+            "counts).\n"
+            "- **Confidence**: how well the record establishes the rating, from "
+            "the settled uncertainty before any inactivity adjustment."
+        )
+    else:
+        st.markdown(
+            "- **Form**: average per-fight surprise (how much they beat what the "
+            "ratings predicted) over the window, scaled. Opponent quality is "
+            "built in: beating a stronger opponent counts far more. Positive is "
+            "hot, negative cold.\n"
+            f"- **Record ({window}mo)** / **Fights**: win-loss string and count "
+            "of fights inside the window. A fighter needs the minimum number of "
+            "fights to qualify, which keeps small samples off the list."
+        )
 
 # --- seam for week-over-week movement (deferred) ---------------------------
-# When enabled: load last week's saved board, join on FIGHTER, and add a
-# movement column (rank delta). Nothing here yet; the snapshot step writes a
-# dated board that a future version reads and diffs against.
+# Save the current board dated, and a future version joins last week's on
+# FIGHTER to add a rank-change column.
