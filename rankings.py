@@ -32,7 +32,7 @@ DEFAULT_ACTIVE_MONTHS = 24
 
 
 def _tier(rd):
-    if rd < 125:
+    if rd < 145:
         return 'Established'
     if rd <= 200:
         return 'Provisional'

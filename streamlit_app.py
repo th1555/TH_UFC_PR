@@ -117,7 +117,7 @@ if mode == "Power ranking":
     board = board.merge(mom[["FIGHTER", "FORM_SCORE", "FORM"]], on="FIGHTER", how="left")
     cols = {
         "RANK": "#", "FIGHTER": "Fighter", "RATING": "Rating",
-        "RD_NOW": "RD", "CR": "Conservative", "FORM_SCORE": "Form", "FORM": "Last 5",
+        "RD": "RD", "CR": "Conservative", "FORM_SCORE": "Form", "FORM": "Last 5",
         "MONTHS_SINCE_SEEN": "Months idle", "TIER_NOW": "Confidence", "N_FIGHTS": "UFC fights",
     }
     fmt = {"Rating": "{:.0f}", "RD": "{:.0f}", "Conservative": "{:.0f}",
@@ -164,11 +164,12 @@ with st.expander("What the columns mean"):
         st.markdown(
             "- **Rating**: Glicko-2 strength; higher is stronger. Never decays "
             "for inactivity.\n"
-            "- **RD**: uncertainty as of today; grows with a layoff and with too "
-            "few fights.\n"
-            "- **Conservative**: Rating minus (k x RD), the lower edge of what "
-            "we're confident of. The list sorts by this, so the uncertain are "
-            "demoted.\n"
+            "- **RD**: how settled the rating is, from the fighter's record; "
+            "lower means more fights and a tighter read. Recency is shown "
+            "separately as Months idle.\n"
+            "- **Conservative**: the rating discounted for uncertainty, "
+            "including any recent layoff. The list sorts by this, so the "
+            "uncertain and the long-idle are demoted.\n"
             "- **Form**: recent form over the last 5 fights, quality-adjusted "
             "(how much they beat what the ratings predicted). Positive is hot.\n"
             "- **Last 5**: win-loss-draw string for those fights.\n"
