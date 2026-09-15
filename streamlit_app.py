@@ -48,12 +48,13 @@ def _rebuild_from_committed(_fingerprint):
 
 
 def _rebuild_all(ledger):
-    """Return (ledger, pooled_current, {division: division_current})."""
+    """Return (ledger, pooled_current, {division: division_current}, momentum)."""
     anchors = load_anchors(ANCHORS)
-    _, pooled = runner.rebuild(ledger, anchors)
+    history, pooled = runner.rebuild(ledger, anchors)
+    mom = rankings.momentum(history)
     div_currents = {d: rankings.division_current(ledger, anchors, d)
                     for d in rankings.REAL_DIVISIONS}
-    return ledger, pooled, div_currents
+    return ledger, pooled, div_currents, mom
 
 
 def get_data():
@@ -98,7 +99,7 @@ if "preview" in st.session_state:
 # ---------------------------------------------------------------------------
 # Build the selected board
 # ---------------------------------------------------------------------------
-ledger, pooled, div_currents = get_data()
+ledger, pooled, div_currents, mom = get_data()
 ref = pd.Timestamp.today().normalize()
 dial = dict(ref_date=ref, k=k, inactivity_floor=floor, active_months=gate, top=top_n)
 
@@ -108,6 +109,8 @@ if view.startswith("Pound-for-pound"):
 else:
     sub = ledger[ledger["weightclass"] == view]
     board = rankings.rank(div_currents[view], sub, **dial)
+
+board = board.merge(mom[["FIGHTER", "FORM_SCORE", "FORM"]], on="FIGHTER", how="left")
 
 
 # ---------------------------------------------------------------------------
@@ -133,8 +136,8 @@ if "preview" in st.session_state:
 # ---------------------------------------------------------------------------
 cols = {
     "RANK": "#", "FIGHTER": "Fighter", "RATING": "Rating",
-    "RD_NOW": "RD", "CR": "Conservative", "MONTHS_SINCE_SEEN": "Months idle",
-    "TIER_NOW": "Confidence", "N_FIGHTS": "UFC fights",
+    "RD_NOW": "RD", "CR": "Conservative", "FORM_SCORE": "Form", "FORM": "Last 5",
+    "MONTHS_SINCE_SEEN": "Months idle", "TIER_NOW": "Confidence", "N_FIGHTS": "UFC fights",
 }
 show = board[[c for c in cols if c in board.columns]].rename(columns=cols)
 st.dataframe(
@@ -154,8 +157,9 @@ with st.expander("What the columns mean"):
         "uncertain are demoted.\n"
         "- **Months idle**: time since the fighter's last appearance (a No "
         "Contest counts as an appearance).\n"
-        "- **Confidence**: reliability tier from RD (Established / Provisional / "
-        "Unreliable)."
+        "- **Confidence**: how well the fighter's record establishes the rating "
+        "(Established / Provisional / Unreliable), based on their settled "
+        "uncertainty before any inactivity adjustment."
     )
 
 # --- seam for week-over-week movement (deferred) ---------------------------

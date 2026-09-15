@@ -20,6 +20,7 @@ active fighters are untouched). A 24-month activity gate decides membership.
 The rating itself is never decayed; only our confidence in it is.
 """
 import math
+import numpy as np
 import pandas as pd
 import glicko_engine as ge
 
@@ -57,7 +58,10 @@ def with_display_state(current, ref_date, floor=DEFAULT_INACTIVITY_FLOOR):
     df['RD_NOW'] = [_display_rd(rd, sg, d, floor)
                     for rd, sg, d in zip(df['RD'], df['SIGMA'], days)]
     df['MONTHS_IDLE'] = (days / 30.44).round(1)
-    df['TIER_NOW'] = df['RD_NOW'].apply(_tier)
+    # Confidence tier reflects how well the fighter's RECORD establishes the
+    # rating (stored RD), not the inactivity-inflated display RD; recency is
+    # shown separately as months idle and handled in the ranking already.
+    df['TIER_NOW'] = df['RD'].apply(_tier)
     return df
 
 
@@ -69,6 +73,44 @@ def last_appearance(ledger_subset):
         ledger_subset[['fighter_2', 'event_date']].rename(columns={'fighter_2': 'FIGHTER'}),
     ], ignore_index=True)
     return a.groupby('FIGHTER')['event_date'].max()
+
+
+def momentum(history, n=5):
+    """Recent form per fighter over their last n rated fights.
+
+    Returns FORM_SCORE and a FORM string. The score sums each fight's surprise
+    (actual result minus what the ratings predicted going in), averaged per
+    fight and scaled, so it is comparable across established and unestablished
+    fighters: it measures beating expectations, not merely winning. Positive is
+    hot form, negative is cold. Roughly -35..+35 in practice. Paired with the
+    win-loss string so the record always sits beside the number.
+    """
+    h = history.copy()
+    h['DATE'] = pd.to_datetime(h['DATE'])
+    # each fighter's opponent pre-fight rating/RD, via the shared FIGHT_ID
+    opp = h[['FIGHT_ID', 'FIGHTER', 'RATING_PRE', 'RD_PRE']].rename(
+        columns={'FIGHTER': 'OPPONENT', 'RATING_PRE': 'OPP_RATING_PRE', 'RD_PRE': 'OPP_RD_PRE'})
+    h = h.merge(opp, on=['FIGHT_ID', 'OPPONENT'], how='left')
+
+    # expected score (vectorised): logistic in the rating gap, damped by the
+    # opponent's uncertainty. Same form the engine uses internally.
+    mu_f = (h['RATING_PRE'] - 1500) / ge.SCALE
+    mu_o = (h['OPP_RATING_PRE'] - 1500) / ge.SCALE
+    phi_o = h['OPP_RD_PRE'] / ge.SCALE
+    g_o = 1 / np.sqrt(1 + 3 * phi_o ** 2 / np.pi ** 2)
+    expected = 1 / (1 + np.exp(-g_o * (mu_f - mu_o)))
+    h['SURPRISE'] = h['SCORE'] - expected
+
+    h = h.sort_values('DATE')
+    rows = []
+    for name, g in h.groupby('FIGHTER'):
+        g = g.tail(n)
+        form = ''.join('W' if s > 0.5 else ('D' if s == 0.5 else 'L') for s in g['SCORE'])
+        rows.append({'FIGHTER': name,
+                     'FORM_SCORE': round(g['SURPRISE'].mean() * 100),
+                     'FORM': form,
+                     'N_RECENT': len(g)})
+    return pd.DataFrame(rows)
 
 
 def rank(current, ledger_subset, ref_date=None, k=DEFAULT_K,
