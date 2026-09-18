@@ -1,10 +1,13 @@
 """
 streamlit_app.py — TH_UFC_PR exploration dashboard.
 
-A read-and-recompute viewer over the ranking functions. Two modes:
-  - Power ranking: the ordered board (P4P male/female, or a division current
-    board), with the ranking dials exposed.
-  - Momentum: who is hottest over a fixed recent window, sorted by form.
+A read-and-recompute viewer over the ranking functions. Three modes:
+  - Power ranking: the ordered board (P4P male/female, or a division), with a
+    Dom column surfacing how emphatically each fighter wins.
+  - Momentum: who is hottest over a fixed recent window.
+  - Most Dominant: the ranked contenders re-sorted by dominance (how emphatic
+    their wins are), so "most dominant of the genuine contenders" rather than a
+    raw finish count anyone can top.
 It loads the committed ledger and recomputes; it never writes or commits. A
 "fetch latest" button previews new events in memory without saving them.
 
@@ -26,12 +29,12 @@ LEDGER = ROOT / "data" / "bout_ledger.parquet"
 ANCHORS = ROOT / "anchors" / "performance.yaml"
 ALIASES = ROOT / "name_aliases.yaml"
 
-st.set_page_config(page_title="UFC Power Rankings", layout="wide")
+st.set_page_config(page_title="UFC Dominance Rankings", layout="wide")
 
 
 # ---------------------------------------------------------------------------
-# Data: load the committed ledger, apply aliases, rebuild once. Cached on the
-# ledger file's fingerprint so it only recomputes when the file changes.
+# Data: load committed ledger, apply aliases, rebuild once. Cached on the
+# ledger file's fingerprint. Returned as a dict to avoid tuple-arity slips.
 # ---------------------------------------------------------------------------
 def _ledger_fingerprint():
     s = LEDGER.stat()
@@ -47,17 +50,20 @@ def _rebuild_from_committed(_fingerprint):
 
 
 def _rebuild_all(ledger):
-    """Return (ledger, pooled_current, {division: current}, momentum, history)."""
     anchors = load_anchors(ANCHORS)
     history, pooled = runner.rebuild(ledger, anchors)
-    mom = rankings.momentum(history)
-    div_currents = {d: rankings.division_current(ledger, anchors, d)
-                    for d in rankings.REAL_DIVISIONS}
-    return ledger, pooled, div_currents, mom, history
+    return {
+        "ledger": ledger,
+        "pooled": pooled,
+        "div_currents": {d: rankings.division_current(ledger, anchors, d)
+                         for d in rankings.REAL_DIVISIONS},
+        "mom": rankings.momentum(history),
+        "dom": rankings.dominance(history, ledger),
+        "history": history,
+    }
 
 
 def get_data():
-    """Committed data, unless a live-feed preview is active this session."""
     if "preview" in st.session_state:
         return st.session_state["preview"]["data"]
     return _rebuild_from_committed(_ledger_fingerprint())
@@ -67,26 +73,26 @@ def get_data():
 # Sidebar
 # ---------------------------------------------------------------------------
 st.sidebar.header("View")
-mode = st.sidebar.radio("Mode", ["Power ranking", "Momentum (who's hot)"])
+mode = st.sidebar.radio("Mode", ["Power ranking", "Momentum (who's hot)", "Most Dominant"])
 view = st.sidebar.selectbox(
     "Ranking",
     ["Pound-for-pound (Male)", "Pound-for-pound (Female)"] + rankings.REAL_DIVISIONS,
 )
 top_n = st.sidebar.slider("Show top", 5, 50, 20, 5)
 
-if mode == "Power ranking":
+if mode == "Momentum (who's hot)":
+    st.sidebar.header("Momentum window")
+    st.sidebar.caption("Who's built the most form over a fixed recent window.")
+    window = st.sidebar.slider("Window (months)", 6, 36, 24, 3)
+    min_fights = st.sidebar.slider("Minimum fights in window", 2, 6, 3, 1)
+else:
     st.sidebar.header("Dials")
-    st.sidebar.caption("How the ordering responds to uncertainty and inactivity.")
+    st.sidebar.caption("Eligibility and how the ordering responds to uncertainty.")
     k = st.sidebar.slider("Uncertainty penalty (k)", 0.0, 3.0, rankings.DEFAULT_K, 0.1)
     floor = st.sidebar.slider("Inactivity floor", 0.18, 0.80,
                               rankings.DEFAULT_INACTIVITY_FLOOR, 0.01)
     gate = st.sidebar.slider("Activity gate (months)", 6, 36,
                              rankings.DEFAULT_ACTIVE_MONTHS, 1)
-else:
-    st.sidebar.header("Momentum window")
-    st.sidebar.caption("Who's built the most form over a fixed recent window.")
-    window = st.sidebar.slider("Window (months)", 6, 36, 24, 3)
-    min_fights = st.sidebar.slider("Minimum fights in window", 2, 6, 3, 1)
 
 st.sidebar.header("Live feed")
 if st.sidebar.button("Fetch latest events (preview, not saved)"):
@@ -103,32 +109,52 @@ if "preview" in st.session_state and st.sidebar.button("Clear preview (back to c
 # ---------------------------------------------------------------------------
 # Build the selected board
 # ---------------------------------------------------------------------------
-ledger, pooled, div_currents, mom, history = get_data()
+d = get_data()
+ledger, pooled, div_currents, mom, dom = d["ledger"], d["pooled"], d["div_currents"], d["mom"], d["dom"]
 ref = pd.Timestamp.today().normalize()
 is_p4p = view.startswith("Pound-for-pound")
 sex = ("M" if "Male" in view else "F") if is_p4p else None
 
-if mode == "Power ranking":
-    dial = dict(ref_date=ref, k=k, inactivity_floor=floor, active_months=gate, top=top_n)
+
+def eligible_board(top=None):
+    """The power-ranking board for the current view (used by Power + Most Dominant)."""
+    dial = dict(ref_date=ref, k=k, inactivity_floor=floor, active_months=gate, top=top)
     if is_p4p:
-        board = rankings.pound_for_pound(pooled, ledger, sex=sex, **dial)
-    else:
-        board = rankings.rank(div_currents[view], ledger[ledger["weightclass"] == view], **dial)
-    board = board.merge(mom[["FIGHTER", "FORM_SCORE", "FORM"]], on="FIGHTER", how="left")
-    cols = {
-        "RANK": "#", "FIGHTER": "Fighter", "RATING": "Rating",
-        "RD": "RD", "CR": "Conservative", "FORM_SCORE": "Form", "FORM": "Last 5",
-        "MONTHS_SINCE_SEEN": "Months idle", "TIER_NOW": "Confidence", "N_FIGHTS": "UFC fights",
-    }
-    fmt = {"Rating": "{:.0f}", "RD": "{:.0f}", "Conservative": "{:.0f}",
-           "Form": "{:+.0f}", "Months idle": "{:.1f}"}
-else:
-    board = rankings.hot_list(history, ledger, ref_date=ref, window_months=window,
-                              min_fights=min_fights,
-                              division=None if is_p4p else view, sex=sex, top=top_n)
+        return rankings.pound_for_pound(pooled, ledger, sex=sex, **dial)
+    return rankings.rank(div_currents[view], ledger[ledger["weightclass"] == view], **dial)
+
+
+if mode == "Momentum (who's hot)":
+    board = rankings.hot_list(d["history"], ledger, ref_date=ref, window_months=window,
+                              min_fights=min_fights, division=None if is_p4p else view,
+                              sex=sex, top=top_n)
     cols = {"RANK": "#", "FIGHTER": "Fighter", "FORM_SCORE": "Form",
             "FORM": f"Record ({window}mo)", "N_RECENT": "Fights"}
     fmt = {"Form": "{:+.0f}"}
+
+elif mode == "Most Dominant":
+    # restrict to the genuine contenders (top by rating) BEFORE sorting on
+    # dominance, so an obscure fighter on a finish streak can't top the list
+    pool = max(top_n, 40)
+    b = eligible_board(top=pool).merge(dom, on="FIGHTER", how="inner")
+    b = b.sort_values("DOM_SCORE", ascending=False).reset_index(drop=True)
+    b["DOM_RANK"] = b.index + 1
+    board = b.merge(mom[["FIGHTER", "FORM"]], on="FIGHTER", how="left").head(top_n)
+    cols = {"DOM_RANK": "#", "FIGHTER": "Fighter", "DOM_SCORE": "Dominance",
+            "FINISH_PCT": "Finish %", "RANK": "Ranked", "FORM": "Last 5"}
+    fmt = {"Dominance": "{:.0f}", "Finish %": "{:.0f}"}
+
+else:  # Power ranking
+    board = eligible_board(top=top_n)
+    board = board.merge(mom[["FIGHTER", "FORM_SCORE", "FORM"]], on="FIGHTER", how="left")
+    board = board.merge(dom[["FIGHTER", "DOM_SCORE"]], on="FIGHTER", how="left")
+    cols = {
+        "RANK": "#", "FIGHTER": "Fighter", "RATING": "Rating", "RD": "RD",
+        "CR": "Conservative", "DOM_SCORE": "Dom", "FORM_SCORE": "Form", "FORM": "Last 5",
+        "MONTHS_SINCE_SEEN": "Months idle", "TIER_NOW": "Confidence", "N_FIGHTS": "UFC fights",
+    }
+    fmt = {"Rating": "{:.0f}", "RD": "{:.0f}", "Conservative": "{:.0f}",
+           "Dom": "{:.0f}", "Form": "{:+.0f}", "Months idle": "{:.1f}"}
 
 
 # ---------------------------------------------------------------------------
@@ -136,10 +162,11 @@ else:
 # ---------------------------------------------------------------------------
 as_of = pd.to_datetime(ledger["event_date"]).max().date()
 n_fighters = len(set(ledger["fighter_1"]) | set(ledger["fighter_2"]))
-st.title("UFC Power Rankings")
-label = f"{view}" + ("  ·  momentum" if mode != "Power ranking" else "")
-st.caption(f"{label}  ·  data through {as_of}  ·  {n_fighters:,} fighters  ·  "
-           f"rating = UFC-only Glicko-2 with a continuous-S dominance modifier")
+st.title("UFC Dominance Rankings")
+tags = {"Power ranking": "", "Momentum (who's hot)": "  ·  momentum",
+        "Most Dominant": "  ·  most dominant"}
+st.caption(f"{view}{tags[mode]}  ·  data through {as_of}  ·  {n_fighters:,} fighters  ·  "
+           f"opponent-adjusted Glicko-2, weighted by how dominant each win was")
 
 if "preview" in st.session_state:
     s = st.session_state["preview"]["status"]
@@ -154,41 +181,43 @@ if "preview" in st.session_state:
 # The board
 # ---------------------------------------------------------------------------
 show = board[[c for c in cols if c in board.columns]].rename(columns=cols)
-st.dataframe(
-    show.style.format(fmt),
-    hide_index=True, width='stretch', height=min(38 * (top_n + 1), 900),
-)
+st.dataframe(show.style.format(fmt), hide_index=True, width='stretch',
+             height=min(38 * (top_n + 1), 900))
 
 with st.expander("What the columns mean"):
-    if mode == "Power ranking":
+    if mode == "Momentum (who's hot)":
         st.markdown(
-            "- **Rating**: Glicko-2 strength; higher is stronger. Never decays "
-            "for inactivity.\n"
-            "- **RD**: how settled the rating is, from the fighter's record; "
-            "lower means more fights and a tighter read. Recency is shown "
-            "separately as Months idle.\n"
-            "- **Conservative**: the rating discounted for uncertainty, "
-            "including any recent layoff. The list sorts by this, so the "
-            "uncertain and the long-idle are demoted.\n"
-            "- **Form**: recent form over the last 5 fights, quality-adjusted "
-            "(how much they beat what the ratings predicted). Positive is hot.\n"
-            "- **Last 5**: win-loss-draw string for those fights.\n"
-            "- **Months idle**: time since the last appearance (a No Contest "
-            "counts).\n"
-            "- **Confidence**: how well the record establishes the rating, from "
-            "the settled uncertainty before any inactivity adjustment."
+            "- **Form**: average per-fight surprise (how much they beat what the "
+            "ratings predicted) over the window, scaled. Opponent quality is built "
+            "in: beating a stronger opponent counts more. Positive is hot.\n"
+            f"- **Record ({window}mo)** / **Fights**: win-loss string and count of "
+            "fights inside the window; a fighter needs the minimum to qualify."
+        )
+    elif mode == "Most Dominant":
+        st.markdown(
+            "- **Dominance**: how emphatically the fighter wins, the average "
+            "continuous-S dominance score over their recent wins (~85 = dominant "
+            "finishes, ~60 = grinding decisions). This is the 'how'.\n"
+            "- **Finish %**: share of those wins that ended inside the distance.\n"
+            "- **Ranked**: the fighter's position on the power ranking (the 'who'). "
+            "The gap between the two is the story: a violent finisher can out-dominate "
+            "a higher-ranked fighter who wins by control."
         )
     else:
         st.markdown(
-            "- **Form**: average per-fight surprise (how much they beat what the "
-            "ratings predicted) over the window, scaled. Opponent quality is "
-            "built in: beating a stronger opponent counts far more. Positive is "
-            "hot, negative cold.\n"
-            f"- **Record ({window}mo)** / **Fights**: win-loss string and count "
-            "of fights inside the window. A fighter needs the minimum number of "
-            "fights to qualify, which keeps small samples off the list."
+            "- **Rating**: opponent-adjusted Glicko-2 strength, weighted by how "
+            "dominant each win was. Never decays for inactivity.\n"
+            "- **RD**: how settled the rating is, from the fighter's record; lower "
+            "means more fights. Recency is shown separately as Months idle.\n"
+            "- **Conservative**: the rating discounted for uncertainty, including any "
+            "recent layoff. The list sorts by this.\n"
+            "- **Dom**: how emphatically they win (average dominance of recent wins).\n"
+            "- **Form**: recent form over the last 5 fights, quality-adjusted. **Last 5** "
+            "is the win-loss string.\n"
+            "- **Months idle**: time since the last appearance (a No Contest counts).\n"
+            "- **Confidence**: how well the record establishes the rating."
         )
 
 # --- seam for week-over-week movement (deferred) ---------------------------
-# Save the current board dated, and a future version joins last week's on
-# FIGHTER to add a rank-change column.
+# Save the current board dated; a future version joins last week's on FIGHTER
+# to add a rank-change column.

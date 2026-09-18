@@ -113,6 +113,32 @@ def momentum(history, n=5):
     return pd.DataFrame(rows)
 
 
+def dominance(history, ledger, n=5):
+    """How emphatically each fighter wins over their last n fights.
+
+    DOM_SCORE is the average continuous-S dominance score (x100): the same
+    per-fight number the ratings are built from, surfaced directly. ~85 means
+    dominant finishes, ~60 grinding decisions, below 50 losing. FINISH_PCT is
+    the share of their wins that ended inside the distance. This is the "how",
+    meant to sit beside the opponent-adjusted rating (the "who"), not replace it.
+    """
+    mcat = ledger.drop_duplicates('bout_id').set_index('bout_id')['method_cat']
+    h = history.copy()
+    h['DATE'] = pd.to_datetime(h['DATE'])
+    h['MCAT'] = h['FIGHT_ID'].map(mcat)
+    rows = []
+    for name, g in h.groupby('FIGHTER'):
+        g = g.sort_values('DATE').tail(n)
+        wins = g[g['SCORE'] > 0.5]
+        if not len(wins):
+            continue  # no recent wins -> no dominance figure (rating carries the record)
+        rows.append({'FIGHTER': name,
+                     'DOM_SCORE': round(wins['SCORE'].mean() * 100),
+                     'FINISH_PCT': round((wins['MCAT'] == 'finish').mean() * 100),
+                     'RECENT_WINS': len(wins)})
+    return pd.DataFrame(rows)
+
+
 def hot_list(history, ledger, ref_date=None, window_months=24, min_fights=3,
              division=None, sex=None, top=None):
     """Momentum board: who is hottest over a fixed recent window.
